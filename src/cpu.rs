@@ -1,13 +1,44 @@
+use crate::opcodes;
 use std::collections::HashMap;
 
-use crate::opcodes;
+bitflags! {
+    ///
+    ///  7 6 5 4 3 2 1 0
+    ///  N V _ B D I Z C
+    ///  | |   | | | | +--- Carry Flag
+    ///  | |   | | | +----- Zero Flag
+    ///  | |   | | +------- Interrupt Disable
+    ///  | |   | +--------- Decimal Mode (not used on NES)
+    ///  | |   +----------- Break Command
+    ///  | +--------------- Overflow Flag
+    ///  +----------------- Negative Flag
+    ///
+
+    pub struct CpuFlags: u8 {
+        const CARRY = 0b0000_0001;
+        const ZERO = 0b0000_0010;
+        const INTERRUPT_DISABLE = 0b0000_0100;
+        const DECIMAL_MODE = 0b0000_1000;
+        const BREAK = 0b0001_0000;
+        const BREAK2 = 0b0010_0000;
+        const OVERFLOW = 0b0100_0000;
+        const NEGATIVE = 0b1000_0000;
+    }
+
+    // Gives you an insert() method to add flags to the bitfield with a bitwise OR.
+    // Gives you a remove() method to remove flags from the bitfield with a bitwise AND NOT.
+}
+
+const STACK: u16 = 0x0100;
+const STACK_RESET: u8 = 0xfd;
 
 pub struct CPU {
     pub register_a: u8,
     pub register_x: u8,
     pub register_y: u8,
-    pub status: u8,
+    pub status: CpuFlags,
     pub program_counter: u16,
+    pub stack_pointer: u8,
     memory: [u8; 0xFFFF],
 }
 
@@ -61,8 +92,9 @@ impl CPU {
             register_a: 0,
             register_x: 0,
             register_y: 0,
-            status: 0,
+            status: CpuFlags::from_bits_truncate(0b100100),
             program_counter: 0,
+            stack_pointer: STACK_RESET,
             memory: [0; 0xFFFF],
         }
     }
@@ -121,12 +153,67 @@ impl CPU {
         }
     }
 
+    fn update_zero_and_negative_flags(&mut self, result: u8) {
+        if result == 0 {
+            self.status.insert(CpuFlags::ZERO);
+        } else {
+            self.status.remove(CpuFlags::ZERO);
+        }
+
+        if result & 0b1000_0000 != 0 {
+            self.status.insert(CpuFlags::NEGATIVE);
+        } else {
+            self.status.remove(CpuFlags::NEGATIVE);
+        }
+    }
+
+    fn add_to_register_a(&mut self, data: u8) {
+        let carry = (if self.status.contains(CpuFlags::CARRY) {
+            1
+        } else {
+            0
+        }) as u16;
+
+        let sum = self.register_a as u16 + data as u16 + carry;
+        let has_carry = sum > 0xff;
+        if has_carry {
+            self.status.insert(CpuFlags::CARRY);
+        } else {
+            self.status.remove(CpuFlags::CARRY);
+        }
+
+        let result = sum as u8;
+        let has_overflow = (data ^ result) & (self.register_a ^ result) & 0x80 != 0;
+        if has_overflow {
+            self.status.insert(CpuFlags::OVERFLOW);
+        } else {
+            self.status.remove(CpuFlags::OVERFLOW);
+        }
+
+        self.set_register_a(result)
+    }
+
+    fn set_register_a(&mut self, value: u8) {
+        self.register_a = value;
+        self.update_zero_and_negative_flags(self.register_a);
+    }
+
+    fn adc(&mut self, mode: &AddressingMode) {
+        let addr = self.get_operand_address(mode);
+        let value = self.mem_read(addr);
+        self.add_to_register_a(value);
+    }
+
+    fn and(&mut self, mode: &AddressingMode) {
+        let addr = self.get_operand_address(mode);
+        let value = self.mem_read(addr) & self.register_a;
+        self.set_register_a(value);
+    }
+
     fn lda(&mut self, mode: &AddressingMode) {
         let addr = self.get_operand_address(mode);
         let value = self.mem_read(addr);
-
-        self.register_a = value;
-        self.update_zero_and_negative_flags(self.register_a);
+        self.set_register_a(value);
     }
 
     fn sta(&mut self, mode: &AddressingMode) {
@@ -144,20 +231,6 @@ impl CPU {
         self.update_zero_and_negative_flags(self.register_x);
     }
 
-    fn update_zero_and_negative_flags(&mut self, result: u8) {
-        if result == 0 {
-            self.status = self.status | 0b0000_0010;
-        } else {
-            self.status = self.status & 0b1111_1101;
-        }
-
-        if result & 0b1000_0000 != 0 {
-            self.status = self.status | 0b1000_0000;
-        } else {
-            self.status = self.status & 0b0111_1111;
-        }
-    }
-
     pub fn load_and_run(&mut self, program: Vec<u8>) {
         self.load(program);
         self.reset();
@@ -173,7 +246,7 @@ impl CPU {
         self.register_a = 0;
         self.register_x = 0;
         self.register_y = 0;
-        self.status = 0;
+        self.status = CpuFlags::from_bits_truncate(0b100100);
 
         self.program_counter = self.mem_read_u16(0xFFFC);
     }
@@ -191,9 +264,22 @@ impl CPU {
                 .expect(&format!("OpCode {:x} is not recognized", code));
 
             match code {
+                // ADC
+                0x69 | 0x65 | 0x75 | 0x6d | 0x7d | 0x79 | 0x61 | 0x71 => {
+                    self.adc(&opcode.mode);
+                }
+
+                // AND
+                0x29 | 0x25 | 0x35 | 0x2d | 0x3d | 0x39 | 0x21 | 0x31 => {
+                    self.and(&opcode.mode);
+                }
+
+                // LDA
                 0xa9 | 0xa5 | 0xb5 | 0xad | 0xbd | 0xb9 | 0xa1 | 0xb1 => {
                     self.lda(&opcode.mode);
                 }
+
+                // STA
                 0x85 | 0x95 | 0x8d | 0x9d | 0x99 | 0x81 | 0x91 => {
                     self.sta(&opcode.mode);
                 }
@@ -214,24 +300,88 @@ impl CPU {
 
 #[cfg(test)]
 mod test {
+    use super::*;
     use std::vec;
 
-    use super::*;
-
     #[test]
-    fn test_0xa9_lda_immidiate_load_data() {
+    fn test_0xa9_lda_immidiate() {
         let mut cpu = CPU::new();
         cpu.load_and_run(vec![0xa9, 0x05, 0x00]);
         assert_eq!(cpu.register_a, 0x05);
-        assert!(cpu.status & 0b0000_0010 == 0b00);
-        assert!(cpu.status & 0b1000_0000 == 0);
+        assert!(cpu.status.bits() & 0b0000_0010 == 0);
+        assert!(cpu.status.bits() & 0b1000_0000 == 0);
     }
 
     #[test]
-    fn test_0xa9_lda_zero_flag() {
+    fn test_0xa9_lda_immidiate_zero_flag() {
         let mut cpu = CPU::new();
         cpu.load_and_run(vec![0xa9, 0x00, 0x00]);
-        assert!(cpu.status & 0b0000_0010 == 0b10);
+        assert!(cpu.status.bits() & 0b0000_0010 == 0b10);
+    }
+
+    #[test]
+    fn test_0x69_add_immediate() {
+        let mut cpu = CPU::new();
+        cpu.load_and_run(vec![0xa9, 0x34, 0x69, 0x10, 0x00]);
+        assert_eq!(cpu.register_a, 0x44);
+        assert!(cpu.status.bits() & 0b0000_0001 == 0);
+        assert!(cpu.status.bits() & 0b0100_0000 == 0);
+    }
+
+    #[test]
+    fn test_0x69_add_cary_flag() {
+        let mut cpu = CPU::new();
+        cpu.load_and_run(vec![0xa9, 0xff, 0x69, 0x10, 0x00]);
+        assert_eq!(cpu.register_a, 0x0f);
+        assert!(cpu.status.bits() & 0b0100_0000 == 0);
+        assert!(cpu.status.bits() & 0b0000_0001 != 0);
+    }
+
+    #[test]
+    fn test_0x69_add_overflow_flag() {
+        let mut cpu = CPU::new();
+        cpu.load_and_run(vec![0xa9, 0x50, 0x69, 0x50, 0x00]);
+        assert_eq!(cpu.register_a, 0xa0);
+        assert!(cpu.status.bits() & 0b0100_0000 != 0);
+        assert!(cpu.status.bits() & 0b0000_0001 == 0);
+    }
+
+    #[test]
+    fn test_0x69_add_carry_and_overflow_flags() {
+        let mut cpu = CPU::new();
+        cpu.load_and_run(vec![0xa9, 0xd0, 0x69, 0x90, 0x00]);
+        assert_eq!(cpu.register_a, 0x60);
+        assert!(cpu.status.bits() & 0b0100_0000 != 0);
+        assert!(cpu.status.bits() & 0b0000_0001 != 0);
+    }
+
+    #[test]
+    fn test_0x65_add_zero_page() {
+        let mut cpu = CPU::new();
+        cpu.mem_write(0x20, 0x10); // wonder if I should use another opcode ¯\_(ツ)_/¯
+        cpu.load_and_run(vec![0xa9, 0x34, 0x65, 0x20, 0x00]);
+        assert_eq!(cpu.register_a, 0x44);
+        assert!(cpu.status.bits() & 0b0000_0001 == 0);
+        assert!(cpu.status.bits() & 0b0100_0000 == 0);
+    }
+
+    #[test]
+    fn test_0x6d_add_absolute() {
+        let mut cpu = CPU::new();
+        cpu.mem_write_u16(0x20, 0x10);
+        cpu.load_and_run(vec![0xa9, 0x34, 0x6d, 0x20, 0x00]);
+        assert_eq!(cpu.register_a, 0x44);
+        assert!(cpu.status.bits() & 0b0000_0001 == 0);
+        assert!(cpu.status.bits() & 0b0100_0000 == 0);
+    }
+
+    #[test]
+    fn test_0x29_and_immediate() {
+        let mut cpu = CPU::new();
+        cpu.load_and_run(vec![0xa9, 0xd0, 0x29, 0x90, 0x00]);
+        assert_eq!(cpu.register_a, 0x90);
+        assert!(cpu.status.bits() & 0b0000_0010 == 0);
+        assert!(cpu.status.bits() & 0b1000_0000 != 0);
     }
 
     #[test]
