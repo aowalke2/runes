@@ -210,6 +210,94 @@ impl CPU {
         self.set_register_a(value);
     }
 
+    fn asl_accumulator(&mut self) {
+        let mut data = self.register_a;
+        if data >> 7 == 1 {
+            self.status.insert(CpuFlags::CARRY);
+        } else {
+            self.status.remove(CpuFlags::CARRY);
+        }
+        data = data << 1;
+        self.set_register_a(data)
+    }
+
+    fn asl(&mut self, mode: &AddressingMode) -> u8 {
+        let addr = self.get_operand_address(mode);
+        let mut data = self.mem_read(addr);
+        if data >> 7 == 1 {
+            self.status.insert(CpuFlags::CARRY);
+        } else {
+            self.status.remove(CpuFlags::CARRY);
+        }
+        data = data << 1;
+        self.mem_write(addr, data);
+        self.update_zero_and_negative_flags(data);
+        data
+    }
+
+    fn branch(&mut self, condition: bool) {
+        if condition {
+            let jump: i8 = self.mem_read(self.program_counter) as i8;
+            let jump_addr = self
+                .program_counter
+                .wrapping_add(1)
+                .wrapping_add(jump as u16);
+
+            self.program_counter = jump_addr;
+        }
+    }
+
+    fn bit(&mut self, mode: &AddressingMode) {
+        let addr = self.get_operand_address(mode);
+        let value = self.mem_read(addr);
+        let and = self.register_a & value;
+        if and == 0 {
+            self.status.insert(CpuFlags::ZERO);
+        } else {
+            self.status.remove(CpuFlags::ZERO);
+        }
+
+        self.status.set(CpuFlags::NEGATIVE, value & 0b1000_0000 > 0);
+        self.status.set(CpuFlags::OVERFLOW, value & 0b0100_0000 > 0);
+    }
+
+    fn compare(&mut self, mode: &AddressingMode, compare_with: u8) {
+        let addr = self.get_operand_address(mode);
+        let value = self.mem_read(addr);
+        if compare_with >= value {
+            self.status.insert(CpuFlags::CARRY);
+        } else {
+            self.status.remove(CpuFlags::CARRY);
+        }
+
+        let result = compare_with.wrapping_sub(value);
+        self.update_zero_and_negative_flags(result);
+    }
+
+    fn dec(&mut self, mode: &AddressingMode) -> u8 {
+        let addr = self.get_operand_address(mode);
+        let data = self.mem_read(addr).wrapping_sub(1);
+        self.mem_write(addr, data);
+        self.update_zero_and_negative_flags(data);
+        data
+    }
+
+    fn dex(&mut self) {
+        self.register_x = self.register_x.wrapping_sub(1);
+        self.update_zero_and_negative_flags(self.register_x);
+    }
+
+    fn dey(&mut self) {
+        self.register_y = self.register_y.wrapping_sub(1);
+        self.update_zero_and_negative_flags(self.register_y);
+    }
+
+    fn eor(&mut self, mode: &AddressingMode) {
+        let addr = self.get_operand_address(mode);
+        let data = self.mem_read(addr);
+        self.set_register_a(data ^ self.register_a);
+    }
+
     fn lda(&mut self, mode: &AddressingMode) {
         let addr = self.get_operand_address(mode);
         let value = self.mem_read(addr);
@@ -264,22 +352,114 @@ impl CPU {
                 .expect(&format!("OpCode {:x} is not recognized", code));
 
             match code {
-                // ADC
+                /* ADC */
                 0x69 | 0x65 | 0x75 | 0x6d | 0x7d | 0x79 | 0x61 | 0x71 => {
                     self.adc(&opcode.mode);
                 }
 
-                // AND
+                /* AND */
                 0x29 | 0x25 | 0x35 | 0x2d | 0x3d | 0x39 | 0x21 | 0x31 => {
                     self.and(&opcode.mode);
                 }
 
-                // LDA
+                /* ASL Accumulator */
+                0x0a => self.asl_accumulator(),
+
+                /* ASL */
+                0x06 | 0x16 | 0x0e | 0x1e => {
+                    self.asl(&opcode.mode);
+                }
+
+                /* BCC */
+                0x90 => {
+                    self.branch(!self.status.contains(CpuFlags::CARRY));
+                }
+
+                /* BCS */
+                0xb0 => {
+                    self.branch(self.status.contains(CpuFlags::CARRY));
+                }
+
+                /* BVC */
+                0x50 => {
+                    self.branch(!self.status.contains(CpuFlags::OVERFLOW));
+                }
+
+                /* BVS */
+                0x70 => {
+                    self.branch(self.status.contains(CpuFlags::OVERFLOW));
+                }
+
+                /* BEQ */
+                0xf0 => {
+                    self.branch(self.status.contains(CpuFlags::ZERO));
+                }
+
+                /* BNE */
+                0xd0 => {
+                    self.branch(!self.status.contains(CpuFlags::ZERO));
+                }
+
+                /* BMI */
+                0x30 => {
+                    self.branch(self.status.contains(CpuFlags::NEGATIVE));
+                }
+
+                /* BPL */
+                0x10 => {
+                    self.branch(!self.status.contains(CpuFlags::NEGATIVE));
+                }
+
+                /* BIT */
+                0x24 | 0x2c => {
+                    self.bit(&opcode.mode);
+                }
+
+                /* CLC */ 0x18 => self.status.remove(CpuFlags::CARRY),
+
+                /* CLD */ 0xd8 => self.status.remove(CpuFlags::DECIMAL_MODE),
+
+                /* CLI */ 0x58 => self.status.remove(CpuFlags::INTERRUPT_DISABLE),
+
+                /* CLV */ 0xb8 => self.status.remove(CpuFlags::OVERFLOW),
+
+                /* CMP */
+                0xc9 | 0xc5 | 0xd5 | 0xcd | 0xdd | 0xd9 | 0xc1 | 0xd1 => {
+                    self.compare(&opcode.mode, self.register_a);
+                }
+
+                /* CPX */
+                0xe0 | 0xe4 | 0xec => {
+                    self.compare(&opcode.mode, self.register_x);
+                }
+
+                /* CPY */
+                0xc0 | 0xc4 | 0xcc => {
+                    self.compare(&opcode.mode, self.register_y);
+                }
+
+                /* DEC */
+                0xc6 | 0xd6 | 0xce | 0xde => {
+                    self.dec(&opcode.mode);
+                }
+
+                /* DEX */
+                0xca => self.dex(),
+
+                /* DEY */
+                0x88 => self.dey(),
+
+                /* EOR */
+                0x49 | 0x45 | 0x55 | 0x4d | 0x5d | 0x59 | 0x41 | 0x51 => {
+                    self.eor(&opcode.mode);
+                }
+
+                /* LDA */
                 0xa9 | 0xa5 | 0xb5 | 0xad | 0xbd | 0xb9 | 0xa1 | 0xb1 => {
                     self.lda(&opcode.mode);
                 }
 
-                // STA
+                /* STA */
                 0x85 | 0x95 | 0x8d | 0x9d | 0x99 | 0x81 | 0x91 => {
                     self.sta(&opcode.mode);
                 }
@@ -382,6 +562,16 @@ mod test {
         assert_eq!(cpu.register_a, 0x90);
         assert!(cpu.status.bits() & 0b0000_0010 == 0);
         assert!(cpu.status.bits() & 0b1000_0000 != 0);
+    }
+
+    #[test]
+    fn test_0x0a_asl_accumulator() {
+        let mut cpu = CPU::new();
+        cpu.load_and_run(vec![0xa9, 0xd0, 0x0a, 0x00]);
+        assert_eq!(cpu.register_a, 0xa0);
+        assert!(cpu.status.bits() & 0b0000_0010 == 0);
+        assert!(cpu.status.bits() & 0b1000_0000 != 0);
+        assert!(cpu.status.bits() & 0b0000_0001 != 0);
     }
 
     #[test]

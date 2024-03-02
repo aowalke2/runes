@@ -13,3 +13,7 @@ RuNES a NES emulator in written in Rust
   - [ ] Scroll
 - [ ] GamePad
 - [ ] APU
+
+## Sources
+
+[Writing NES Emulator in Rust](https://bugzmanov.github.io/nes_ebook/chapter_1.html)
