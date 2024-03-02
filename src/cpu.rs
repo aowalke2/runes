@@ -14,6 +14,7 @@ bitflags! {
     ///  +----------------- Negative Flag
     ///
 
+    #[derive(Clone, Copy)]
     pub struct CpuFlags: u8 {
         const CARRY = 0b0000_0001;
         const ZERO = 0b0000_0010;
@@ -390,14 +391,151 @@ impl CPU {
         self.set_register_a(data);
     }
 
+    fn pha(&mut self) {
+        self.stack_push(self.register_a);
+    }
+
+    fn php(&mut self) {
+        let mut flags = self.status.clone();
+        flags.insert(CpuFlags::BREAK);
+        flags.insert(CpuFlags::BREAK2);
+        self.stack_push(flags.bits());
+    }
+
+    fn pla(&mut self) {
+        let data = self.stack_pop();
+        self.set_register_a(data)
+    }
+
+    fn plp(&mut self) {
+        self.status = CpuFlags::from_bits_truncate(self.stack_pop());
+        self.status.remove(CpuFlags::BREAK);
+        self.status.insert(CpuFlags::BREAK2);
+    }
+
+    fn rol_accumulator(&mut self, mode: &AddressingMode) {
+        let mut data = self.register_a;
+        let old_carry = self.status.contains(CpuFlags::CARRY);
+
+        if data >> 7 == 1 {
+            self.status.insert(CpuFlags::CARRY);
+        } else {
+            self.status.remove(CpuFlags::CARRY);
+        }
+
+        data = data << 1;
+        if old_carry {
+            data = data | 1;
+        }
+        self.set_register_a(data);
+    }
+
+    fn rol(&mut self, mode: &AddressingMode) -> u8 {
+        let addr = self.get_operand_address(mode);
+        let mut data = self.mem_read(addr);
+        let old_carry = self.status.contains(CpuFlags::CARRY);
+
+        if data >> 7 == 1 {
+            self.status.insert(CpuFlags::CARRY);
+        } else {
+            self.status.remove(CpuFlags::CARRY);
+        }
+
+        data = data << 1;
+        if old_carry {
+            data = data | 1;
+        }
+        self.mem_write(addr, data);
+        self.update_zero_and_negative_flags(data);
+        data
+    }
+
+    fn ror_accumulator(&mut self, mode: &AddressingMode) {
+        let mut data = self.register_a;
+        let old_carry = self.status.contains(CpuFlags::CARRY);
+
+        if data & 1 == 1 {
+            self.status.insert(CpuFlags::CARRY);
+        } else {
+            self.status.remove(CpuFlags::CARRY);
+        }
+
+        data = data >> 1;
+        if old_carry {
+            data = data | 0b1000_0000;
+        }
+        self.set_register_a(data);
+    }
+
+    fn ror(&mut self, mode: &AddressingMode) -> u8 {
+        let addr = self.get_operand_address(mode);
+        let mut data = self.mem_read(addr);
+        let old_carry = self.status.contains(CpuFlags::CARRY);
+
+        if data & 1 == 1 {
+            self.status.insert(CpuFlags::CARRY);
+        } else {
+            self.status.remove(CpuFlags::CARRY);
+        }
+
+        data = data >> 1;
+        if old_carry {
+            data = data | 0b1000_0000;
+        }
+        self.mem_write(addr, data);
+        self.update_zero_and_negative_flags(data);
+        data
+    }
+
+    fn sbc(&mut self, mode: &AddressingMode) {
+        let addr = self.get_operand_address(mode);
+        let data = self.mem_read(addr);
+        self.add_to_register_a((!data).wrapping_sub(1) as u8);
+        //self.add_to_register_a(((data as i8).wrapping_neg().wrapping_sub(1)) as u8);
+    }
+
     fn sta(&mut self, mode: &AddressingMode) {
         let addr = self.get_operand_address(mode);
         self.mem_write(addr, self.register_a);
     }
 
+    fn stx(&mut self, mode: &AddressingMode) {
+        let addr = self.get_operand_address(mode);
+        self.mem_write(addr, self.register_x);
+    }
+
+    fn sty(&mut self, mode: &AddressingMode) {
+        let addr = self.get_operand_address(mode);
+        self.mem_write(addr, self.register_y);
+    }
+
     fn tax(&mut self) {
         self.register_x = self.register_a;
         self.update_zero_and_negative_flags(self.register_x);
+    }
+
+    fn txa(&mut self) {
+        self.register_a = self.register_x;
+        self.update_zero_and_negative_flags(self.register_a);
+    }
+
+    fn tay(&mut self) {
+        self.register_y = self.register_a;
+        self.update_zero_and_negative_flags(self.register_y);
+    }
+
+    fn tya(&mut self) {
+        self.register_a = self.register_y;
+        self.update_zero_and_negative_flags(self.register_a);
+    }
+
+    fn tsx(&mut self) {
+        self.register_x = self.stack_pointer;
+        self.update_zero_and_negative_flags(self.register_x);
+    }
+
+    fn txs(&mut self) {
+        self.stack_pointer = self.register_x;
     }
 
     pub fn load_and_run(&mut self, program: Vec<u8>) {
@@ -607,11 +745,92 @@ impl CPU {
                     self.ora(&opcode.mode);
                 }
 
+                /* PHA */
+                0x48 => self.pha(),
+
+                /* PHP */
+                0x08 => self.php(),
+
+                /* PLA */
+                0x68 => self.pla(),
+
+                /* PLP */
+                0x28 => self.plp(),
+
+                /* ROL Accumulator */
+                0x2a => self.rol_accumulator(&opcode.mode),
+
+                /* ROL */
+                0x26 | 0x36 | 0x2e | 0x3e => {
+                    self.rol(&opcode.mode);
+                }
+
+                /* ROR Accumulator */
+                0x6a => self.ror_accumulator(&opcode.mode),
+
+                /* ROR */
+                0x66 | 0x76 | 0x6e | 0x7e => {
+                    self.ror(&opcode.mode);
+                }
+
+                /* RTI */
+                0x40 => {
+                    self.plp();
+                    self.program_counter = self.stack_pop_u16();
+                }
+
+                /* RTS */
+                0x60 => {
+                    self.program_counter = self.stack_pop_u16() + 1;
+                }
+
+                /* SBC */
+                0xe9 | 0xe5 | 0xf5 | 0xed | 0xfd | 0xf9 | 0xe1 | 0xf1 => {
+                    self.sbc(&opcode.mode);
+                }
+
+                /* SEC */
+                0x38 => self.status.insert(CpuFlags::CARRY),
+
+                /* SED */
+                0xf8 => self.status.insert(CpuFlags::DECIMAL_MODE),
+
+                /* SEI */
+                0x78 => self.status.insert(CpuFlags::INTERRUPT_DISABLE),
+
                 /* STA */
                 0x85 | 0x95 | 0x8d | 0x9d | 0x99 | 0x81 | 0x91 => {
                     self.sta(&opcode.mode);
                 }
+
+                /* STX */
+                0x86 | 0x96 | 0x8e => {
+                    self.stx(&opcode.mode);
+                }
+
+                /* STY */
+                0x84 | 0x94 | 0x8c => {
+                    self.sty(&opcode.mode);
+                }
+
+                /* TAX */
                 0xaa => self.tax(),
+
+                /* TXA */
+                0x8a => self.txa(),
+
+                /* TAY */
+                0xa8 => self.tay(),
+
+                /* TYA */
+                0x98 => self.tya(),
+
+                /* TSX */
+                0xba => self.tsx(),
+
+                /* TXS */
+                0x9a => self.txs(),
+
                 0x00 => {
                     return;
                 }
