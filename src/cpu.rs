@@ -781,6 +781,12 @@ impl CPU {
                     //do nothing
                 }
 
+                /* TAX */
+                0xaa => {
+                    self.register_x = self.register_a;
+                    self.update_zero_and_negative_flags(self.register_x);
+                }
+
                 /* TAY */
                 0xa8 => {
                     self.register_y = self.register_a;
@@ -808,11 +814,6 @@ impl CPU {
                 0x98 => {
                     self.register_a = self.register_y;
                     self.update_zero_and_negative_flags(self.register_a);
-                }
-
-                0xaa => {
-                    self.register_x = self.register_a;
-                    self.update_zero_and_negative_flags(self.register_x);
                 }
 
                 0x00 => return,
@@ -845,9 +846,7 @@ mod test {
     #[test]
     fn test_0xaa_tax_move_a_to_x() {
         let mut cpu = CPU::new();
-        cpu.register_a = 10;
-        cpu.load_and_run(vec![0xaa, 0x00]);
-
+        cpu.load_and_run(vec![0xa9, 0x0a, 0xaa, 0x00]);
         assert_eq!(cpu.register_x, 10)
     }
 
@@ -862,9 +861,7 @@ mod test {
     #[test]
     fn test_inx_overflow() {
         let mut cpu = CPU::new();
-        cpu.register_x = 0xff;
-        cpu.load_and_run(vec![0xe8, 0xe8, 0x00]);
-
+        cpu.load_and_run(vec![0xa2, 0xff, 0xe8, 0xe8, 0x00]);
         assert_eq!(cpu.register_x, 1)
     }
 
