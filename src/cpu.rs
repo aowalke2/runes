@@ -1128,9 +1128,7 @@ mod test {
     fn test_0xaa_tax_move_a_to_x() {
         let bus = Bus::new(test::test_rom());
         let mut cpu = CPU::new(bus);
-        cpu.register_a = 10;
-        cpu.load_and_run(vec![0xaa, 0x00]);
-
+        cpu.load_and_run(vec![0xa9, 0x0a, 0xaa, 0x00]);
         assert_eq!(cpu.register_x, 10)
     }
 
@@ -1139,7 +1137,6 @@ mod test {
         let bus = Bus::new(test::test_rom());
         let mut cpu = CPU::new(bus);
         cpu.load_and_run(vec![0xa9, 0xc0, 0xaa, 0xe8, 0x00]);
-
         assert_eq!(cpu.register_x, 0xc1)
     }
 
@@ -1147,9 +1144,7 @@ mod test {
     fn test_inx_overflow() {
         let bus = Bus::new(test::test_rom());
         let mut cpu = CPU::new(bus);
-        cpu.register_x = 0xff;
-        cpu.load_and_run(vec![0xe8, 0xe8, 0x00]);
-
+        cpu.load_and_run(vec![0xa2, 0xff, 0xe8, 0xe8, 0x00]);
         assert_eq!(cpu.register_x, 1)
     }
 
@@ -1158,9 +1153,7 @@ mod test {
         let bus = Bus::new(test::test_rom());
         let mut cpu = CPU::new(bus);
         cpu.mem_write(0x10, 0x55);
-
         cpu.load_and_run(vec![0xa5, 0x10, 0x00]);
-
         assert_eq!(cpu.register_a, 0x55);
     }
 }
