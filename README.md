@@ -2,10 +2,10 @@
 
 RuNES a NES emulator in written in Rust
 
-![25%](https://progress-bar.dev/25/?title=done)
+![27%](https://progress-bar.dev/27/?title=done)
 
 - [x] CPU
-- [ ] BUS
+- [x] BUS
 - [ ] ROMs
 - [ ] PPU
   - [ ] Logic
